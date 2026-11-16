@@ -34,6 +34,8 @@ const ICONS = {
   edit: '<path d="M4 20h4L19 9l-4-4L4 16v4Z"/>',
   grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   camera: '<path d="M4 8h3l1.6-2h6.8L17 8h3v11H4Z"/><circle cx="12" cy="13.5" r="3.4"/>',
+  bolt: '<path d="M13 3 5 14h6l-1 7 8-11h-6z"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m21 16-5-5-8 9"/>',
   cart: '<circle cx="9" cy="20" r="1.4"/><circle cx="18" cy="20" r="1.4"/><path d="M3 4h2.5l2.4 11h10.2L20 8H7"/>',
 };
 function icon(name) {
@@ -43,6 +45,39 @@ function icon(name) {
   s.setAttribute('aria-hidden', 'true');
   s.innerHTML = ICONS[name]; // costante interna, nessun dato utente
   return s;
+}
+
+
+let logoN = 0;
+/** Logo Smemo (cestino su tessera scura): il gradiente segue il colore d'accento scelto. */
+function logoSvg(size = 40) {
+  const id = 'smemo-lg' + ++logoN;
+  const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  s.setAttribute('viewBox', '0 0 120 120');
+  s.setAttribute('width', size);
+  s.setAttribute('height', size);
+  s.setAttribute('class', 'logo');
+  s.setAttribute('role', 'img');
+  s.setAttribute('aria-label', 'Smemo');
+  const st = `fill="none" stroke="url(#${id})" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"`;
+  s.innerHTML = // costante interna, nessun dato utente
+    `<defs><linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="120" y2="120">` +
+    '<stop offset="0" style="stop-color:var(--accent)"/><stop offset="1" style="stop-color:var(--accent2)"/></linearGradient></defs>' +
+    '<rect x="1" y="1" width="118" height="118" rx="27" fill="#1E1B2E"/>' +
+    `<path d="M24 54h72l-8 40a8 8 0 0 1-8 6H40a8 8 0 0 1-8-6z" ${st}/><path d="M42 54l14-24M78 54L64 30" ${st}/><path d="M52 68v18M68 68v18" ${st}/>`;
+  return s;
+}
+
+/** Icona della scheda del browser con i colori d'accento correnti. */
+function updateFavicon() {
+  const hue = Number(prefs.get('hue', '262')) || 262;
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120"><defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="120" y2="120">' +
+    `<stop offset="0" stop-color="hsl(${hue} 90% 66%)"/><stop offset="1" stop-color="hsl(${(hue + 50) % 360} 95% 62%)"/></linearGradient></defs>` +
+    '<rect x="1" y="1" width="118" height="118" rx="27" fill="#1E1B2E"/>' +
+    '<g fill="none" stroke="url(#g)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M24 54h72l-8 40a8 8 0 0 1-8 6H40a8 8 0 0 1-8-6z"/><path d="M42 54l14-24M78 54L64 30"/><path d="M52 68v18M68 68v18"/></g></svg>';
+  const link = $('#favicon');
+  if (link) { link.type = 'image/svg+xml'; link.href = 'data:image/svg+xml,' + encodeURIComponent(svg); }
 }
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -101,6 +136,7 @@ function applyPrefs() {
   const root = document.documentElement;
   root.dataset.theme = dark ? 'dark' : 'light';
   root.style.setProperty('--h', prefs.get('hue', '262'));
+  updateFavicon();
   const meta = $('meta[name=theme-color]');
   if (meta) meta.content = dark ? '#14121f' : '#f6f5fb';
 }
@@ -290,44 +326,214 @@ function pickEmoji(current, onPick) {
 }
 
 /* ───────────── scansione scontrino ───────────── */
-function pickImage() {
+function pickImages() {
   return new Promise((resolve) => {
-    const input = h('input', { type: 'file', accept: 'image/*', class: 'hidden' });
+    const input = h('input', { type: 'file', accept: 'image/*', multiple: true, class: 'hidden' });
     let settled = false;
     const done = (f) => { if (settled) return; settled = true; input.remove(); resolve(f); };
-    input.addEventListener('change', () => done(input.files[0] || null));
-    input.addEventListener('cancel', () => done(null));
+    input.addEventListener('change', () => done([...input.files]));
+    input.addEventListener('cancel', () => done([]));
     document.body.append(input);
     input.click();
   });
 }
 
-/** Chiede la foto, la legge con l'OCR e restituisce { text, items, total } (o null se annullato). */
-async function runScan() {
-  const file = await pickImage();
-  if (!file) return null;
+/** Foglio con le tre modalità di acquisizione. Restituisce 'live' | 'sections' | 'file' | null. */
+function chooseScanSource() {
+  return new Promise((resolve) => {
+    let done = false;
+    const pick = (v) => (close) => { done = true; resolve(v); close(); };
+    const opt = (ic, title, sub, v, primary) =>
+      h('button', {
+        class: 'src-btn' + (primary ? ' primary' : ''), type: 'button',
+        onclick: (e) => pick(v)(() => e.currentTarget.closest('dialog').close()),
+      }, h('span', { class: 'src-ic' }, icon(ic)), h('span', { class: 'src-tx' }, h('strong', {}, title), h('small', {}, sub)));
+    openSheet('Scansiona scontrino', h('div', { class: 'stack tight' },
+      opt('camera', 'Fotocamera: scansione dinamica', 'Scorri il telefono lungo lo scontrino, anche lungo: legge da solo', 'live', true),
+      opt('rows', 'Fotocamera: scatta a sezioni', 'Scatti tu, una parte alla volta, con un po’ di sovrapposizione', 'sections'),
+      opt('image', 'Scegli foto dalla galleria', 'Anche più foto insieme, in ordine dall’alto verso il basso', 'file')),
+    [{ label: 'Annulla', cls: 'ghost', run: (c) => { done = true; resolve(null); c(); } }],
+    () => { if (!done) resolve(null); });
+  });
+}
+
+/** Scansione da una o più foto già scattate. */
+async function fileScan() {
+  const files = await pickImages();
+  if (!files.length) return null;
   const bar = h('i');
   const status = h('p', { class: 'muted' }, 'Preparo la foto…');
   let finished = false;
   let cancelled = false;
-  let task = null;
-  const stop = () => { cancelled = true; task?.cancel(); };
+  let ocr = null;
+  const stop = async () => { cancelled = true; try { await ocr?.close(); } catch { /* ok */ } };
   const sh = openSheet('Scansione scontrino', [
     status, h('div', { class: 'bar' }, bar),
-    h('p', { class: 'muted small' }, 'La lettura avviene sul telefono: la foto non viene inviata a nessuno.'),
+    h('p', { class: 'muted small' }, 'La lettura avviene sul telefono: le foto non vengono inviate a nessuno.'),
   ], [{ label: 'Annulla', cls: 'ghost', run: (c) => { stop(); c(); } }], () => { if (!finished) stop(); });
-  task = scan.recognize(file, (t, p) => { status.textContent = t; bar.style.width = Math.round(p * 100) + '%'; });
   try {
-    const text = await task.promise;
+    ocr = await scan.createOcr((t, p) => { status.textContent = t; bar.style.width = Math.round(p * 100) + '%'; });
+    const merger = new scan.ReceiptMerger();
+    for (const [i, f] of files.entries()) {
+      if (cancelled) throw new Error('annullato');
+      status.textContent = files.length > 1 ? `Leggo la foto ${i + 1} di ${files.length}…` : 'Leggo lo scontrino…';
+      bar.style.width = Math.round((0.15 + (0.85 * i) / files.length) * 100) + '%';
+      merger.add(await ocr.read(await scan.preprocess(f)));
+    }
+    await ocr.close();
     finished = true;
     sh.close();
+    const text = merger.text;
     return { text, ...scan.parseReceipt(text) };
   } catch (e) {
     finished = true;
+    try { await ocr?.close(); } catch { /* ok */ }
     sh.close();
     if (!cancelled) toast(e?.message && e.message !== 'annullato' ? e.message : 'Lettura non riuscita, riprova');
     return null;
   }
+}
+
+/**
+ * Scansione con la fotocamera. mode 'live': scatta da sola mentre scorri; mode 'sections': scatti tu.
+ * Restituisce { text, items, total } oppure null se annullata.
+ */
+function liveScan(mode) {
+  const auto = mode === 'live';
+  return new Promise(async (resolve) => {
+    if (!navigator.mediaDevices?.getUserMedia) { toast('Fotocamera non disponibile: scegli una foto dalla galleria'); return resolve(null); }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false,
+      });
+    } catch (e) {
+      toast(e?.name === 'NotAllowedError' ? 'Permesso alla fotocamera negato: abilitalo o scegli una foto dalla galleria' : 'Fotocamera non disponibile: scegli una foto dalla galleria');
+      return resolve(null);
+    }
+    const track = stream.getVideoTracks()[0];
+    const caps = track.getCapabilities?.() || {};
+    if (caps.focusMode?.includes?.('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+
+    const video = h('video', { class: 'live-video', playsinline: true, autoplay: true });
+    video.muted = true;
+    video.srcObject = stream;
+    const guide = h('div', { class: 'live-guide' }, h('i', { class: 'c1' }), h('i', { class: 'c2' }), h('i', { class: 'c3' }), h('i', { class: 'c4' }));
+    const line = h('div', { class: 'live-line' });
+    const hint = h('div', { class: 'live-hint' });
+    const bottom = h('div', { class: 'live-bottom' });
+    let torchOn = false;
+    const torchBtn = caps.torch
+      ? h('button', {
+          class: 'live-circle', type: 'button', 'aria-label': 'Torcia',
+          onclick: async (e) => {
+            torchOn = !torchOn;
+            try { await track.applyConstraints({ advanced: [{ torch: torchOn }] }); e.currentTarget.classList.toggle('on', torchOn); } catch { torchOn = !torchOn; }
+          },
+        }, icon('bolt'))
+      : null;
+    const closeBtn = h('button', { class: 'live-circle', type: 'button', 'aria-label': 'Chiudi', onclick: () => end(null) }, icon('x'));
+    const dlg = h('dialog', { class: 'live' }, video, h('div', { class: 'live-shade' }), guide, line,
+      h('div', { class: 'live-top' }, closeBtn, torchBtn), hint, bottom);
+
+    let ocr = null;
+    let scanner = null;
+    let phase = 'loading';
+    let finished = false;
+    let parsed = { items: [], total: null };
+
+    const setHint = (t, warn = false) => {
+      if (hint.textContent !== t) hint.textContent = t;
+      hint.classList.toggle('warn', warn);
+    };
+    const cleanup = async () => {
+      scanner?.stop();
+      stream.getTracks().forEach((t) => t.stop());
+      try { await ocr?.close(); } catch { /* ok */ }
+    };
+    const end = async (result) => {
+      if (finished) return;
+      finished = true;
+      await cleanup();
+      if (dlg.open) dlg.close();
+      resolve(result);
+    };
+    dlg.addEventListener('close', () => { if (!finished) { finished = true; cleanup(); resolve(null); } dlg.remove(); });
+
+    const finish = async () => {
+      if (!scanner) return;
+      scanner.stop();
+      await scanner.idle();
+      const text = scanner.merger.text.trim();
+      if (!text) { toast('Non ho letto niente: riprova'); return end(null); }
+      end({ text, ...scan.parseReceipt(text) });
+    };
+    const begin = () => {
+      phase = 'running';
+      if (auto) scanner.start(); else scanner.shoot();
+      setHint(auto ? 'Scorri piano verso il basso' : 'Scatta la prima parte dello scontrino');
+      drawBottom();
+    };
+    const shoot = () => { if (!scanner.shoot()) toast('Attendi: sto ancora leggendo'); };
+
+    const drawBottom = () => {
+      if (phase === 'loading') {
+        bottom.replaceChildren(h('button', { class: 'btn primary live-btn', type: 'button', disabled: true }, 'Preparo il lettore…'));
+      } else if (phase === 'ready') {
+        bottom.replaceChildren(
+          auto
+            ? h('button', { class: 'btn primary live-btn', type: 'button', onclick: begin }, 'Avvia scansione')
+            : h('button', { class: 'live-shutter', type: 'button', 'aria-label': 'Scatta', onclick: begin }, h('i')),
+          h('div', { class: 'live-tip' }, 'Scontrino disteso, buona luce, tutto nel riquadro'));
+      } else {
+        const last = parsed.items.slice(-3);
+        bottom.replaceChildren(h('div', { class: 'live-card' },
+          h('div', { class: 'row' }, h('strong', {}, 'Lette finora'), h('span', { class: 'pill' }, `${parsed.items.length} ${parsed.items.length === 1 ? 'riga' : 'righe'}`)),
+          last.length ? last.map((it) => h('div', { class: 'live-row' }, h('span', {}, it.name), h('span', {}, money(it.price)))) : h('p', { class: 'muted small' }, 'Ancora nessuna riga con prezzo…'),
+          h('div', { class: 'live-btns' },
+            auto ? null : h('button', { class: 'live-shutter sm', type: 'button', 'aria-label': 'Scatta', onclick: shoot }, h('i')),
+            h('button', { class: 'btn primary live-btn', type: 'button', onclick: finish },
+              parsed.total != null ? `Fine: totale ${money(parsed.total)}` : 'Fine'))));
+      }
+    };
+    const HINTS = { noReceipt: 'Inquadra lo scontrino', steady: 'Tieni fermo il telefono', focus: 'Avvicinati o aggiungi luce per mettere a fuoco' };
+    const onUpdate = (ev) => {
+      if (finished) return;
+      if (ev.type === 'busy') { line.classList.add('on'); return; }
+      if (ev.type === 'hint') { if (auto && phase === 'running') setHint(HINTS[ev.hint], ev.hint !== 'noReceipt'); return; }
+      line.classList.remove('on');
+      parsed = scan.parseReceipt(scanner.merger.text);
+      if (!ev.aligned) setHint('Troppo veloce: torna un po’ indietro e riparti più piano', true);
+      else setHint(auto ? 'Scorri piano verso il basso' : 'Inquadra la parte successiva, ripartendo dall’ultima riga letta');
+      drawBottom();
+      if (auto && parsed.total != null && ev.aligned) finish();
+    };
+
+    document.body.append(dlg);
+    dlg.showModal();
+    video.play().catch(() => {});
+    setHint('Preparo il lettore…');
+    drawBottom();
+    try {
+      ocr = await scan.createOcr();
+      if (finished) { await ocr.close(); return; }
+      scanner = new scan.LiveScanner({ video, guide, ocr, onUpdate });
+      phase = 'ready';
+      setHint('Inquadra l’inizio dello scontrino');
+      drawBottom();
+    } catch (e) {
+      toast(e?.message || 'Lettore non disponibile');
+      end(null);
+    }
+  });
+}
+
+/** Sceglie come acquisire lo scontrino e restituisce { text, items, total } (o null se annullato). */
+async function runScan() {
+  const src = await chooseScanSource();
+  if (!src) return null;
+  if (src === 'file') return fileScan();
+  return liveScan(src);
 }
 
 /** Ricorda che una riga di scontrino corrisponde a un articolo (le volte successive viene riconosciuta da sola). */
@@ -479,7 +685,9 @@ function reviewPrices(res, list) {
 /* ───────────── VISTA: liste ───────────── */
 function viewListe() {
   const open = state.lists.filter((l) => l.status === 'open').sort((a, b) => b.createdAt - a.createdAt);
-  const wrap = h('section', {}, pageHead('Le mie liste'));
+  const wrap = h('section', {},
+    h('header', { class: 'top brand' }, logoSvg(42), h('h1', {}, 'Smemo')),
+    h('h3', { class: 'sec' }, 'Le mie liste'));
   if (!open.length) {
     wrap.append(empty('Nessuna lista attiva', 'Tocca + per creare una lista e iniziare la spesa.'));
   } else {
@@ -1069,7 +1277,7 @@ function viewImpostazioni() {
 async function doExport() {
   const data = await db.exportAll();
   const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
-  const a = h('a', { href: url, download: `spesa-backup-${todayISO()}.json` });
+  const a = h('a', { href: url, download: `smemo-backup-${todayISO()}.json` });
   document.body.append(a);
   a.click();
   a.remove();

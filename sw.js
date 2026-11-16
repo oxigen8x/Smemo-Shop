@@ -1,7 +1,7 @@
 // Service worker: app shell in cache, strategia "stale-while-revalidate".
 // L'app si apre subito dalla cache anche offline; se online, aggiorna la cache
 // in background (le modifiche compaiono alla riapertura successiva).
-const CACHE = 'spesa-v2';
+const CACHE = 'smemo-v3';
 const ASSETS = [
   './',
   './index.html',

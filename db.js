@@ -1,4 +1,5 @@
 // Livello dati: IndexedDB con 4 store (categories, articles, lists, purchases).
+// Il nome interno resta 'spesa' di proposito: cambiarlo farebbe "perdere" i dati già salvati sui telefoni.
 const DB_NAME = 'spesa';
 const DB_VERSION = 2;
 // aliases: memoria delle righe scontrino già associate a un articolo ({ key, articleId })
@@ -42,14 +43,14 @@ export const put = (store, value) => run(store, 'readwrite', (o) => o.put(value)
 export const del = (store, id) => run(store, 'readwrite', (o) => o.delete(id));
 
 export async function exportAll() {
-  const data = { app: 'spesa', version: 1, exportedAt: new Date().toISOString() };
+  const data = { app: 'smemo', version: 1, exportedAt: new Date().toISOString() };
   for (const s of STORES) data[s] = await all(s);
   return data;
 }
 
 /** Sostituisce tutto il contenuto con quello del backup, in un'unica transazione. */
 export async function importAll(data) {
-  if (!data || data.app !== 'spesa') throw new Error('File non valido: non è un backup di questa app.');
+  if (!data || (data.app !== 'smemo' && data.app !== 'spesa')) throw new Error('File non valido: non è un backup di questa app.');
   for (const s of STORES) {
     if (data[s] === undefined && s === 'aliases') data[s] = []; // backup creati prima della scansione scontrino
     if (!Array.isArray(data[s])) throw new Error('Backup incompleto: manca "' + s + '".');

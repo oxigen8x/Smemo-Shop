@@ -1,8 +1,8 @@
 {
   "id": "./",
-  "name": "Lista della Spesa",
-  "short_name": "Spesa",
-  "description": "Liste della spesa offline con storico e ricorrenza degli acquisti",
+  "name": "Smemo",
+  "short_name": "Smemo",
+  "description": "Smemo: liste della spesa offline, scansione scontrino e storico degli acquisti",
   "lang": "it",
   "start_url": "./",
   "scope": "./",
