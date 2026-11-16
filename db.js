@@ -1,7 +1,8 @@
 // Livello dati: IndexedDB con 4 store (categories, articles, lists, purchases).
 const DB_NAME = 'spesa';
-const DB_VERSION = 1;
-export const STORES = ['categories', 'articles', 'lists', 'purchases'];
+const DB_VERSION = 2;
+// aliases: memoria delle righe scontrino già associate a un articolo ({ key, articleId })
+export const STORES = ['categories', 'articles', 'lists', 'purchases', 'aliases'];
 
 let dbPromise;
 export function open() {
@@ -14,7 +15,10 @@ export function open() {
           if (!db.objectStoreNames.contains(s)) db.createObjectStore(s, { keyPath: 'id', autoIncrement: true });
         }
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        req.result.onversionchange = () => { req.result.close(); dbPromise = null; };
+        resolve(req.result);
+      };
       req.onerror = () => reject(req.error);
     });
   }
@@ -46,7 +50,10 @@ export async function exportAll() {
 /** Sostituisce tutto il contenuto con quello del backup, in un'unica transazione. */
 export async function importAll(data) {
   if (!data || data.app !== 'spesa') throw new Error('File non valido: non è un backup di questa app.');
-  for (const s of STORES) if (!Array.isArray(data[s])) throw new Error('Backup incompleto: manca "' + s + '".');
+  for (const s of STORES) {
+    if (data[s] === undefined && s === 'aliases') data[s] = []; // backup creati prima della scansione scontrino
+    if (!Array.isArray(data[s])) throw new Error('Backup incompleto: manca "' + s + '".');
+  }
   const db = await open();
   await new Promise((resolve, reject) => {
     const tx = db.transaction(STORES, 'readwrite');

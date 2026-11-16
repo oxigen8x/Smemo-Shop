@@ -276,3 +276,63 @@ details.prices summary { cursor: pointer; font-weight: 650; padding: 8px 0; colo
 #toast:not(:popover-open) { display: none; }
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ───────────── icone, riquadri, scansione ───────────── */
+.vt { display: flex; background: var(--card2); border-radius: 14px; padding: 2px; }
+.vt .icon-btn { width: 40px; height: 40px; border-radius: 12px; color: var(--muted); }
+.vt .icon-btn.on { background: var(--card); color: var(--accent); box-shadow: var(--shadow); }
+.group h3 { display: flex; align-items: center; gap: 6px; }
+.group h3 small { font-weight: 700; opacity: 0.7; letter-spacing: 0; }
+.group { margin-bottom: 4px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; margin-bottom: 8px; }
+.tile {
+  position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  aspect-ratio: 1 / 1; padding: 8px 6px; border-radius: 20px; border: 2px solid transparent;
+  background: var(--card); box-shadow: var(--shadow); transition: transform 0.1s, border-color 0.15s;
+}
+.tile:active { transform: scale(0.95); }
+.tile .ti { font-size: 2.2rem; line-height: 1; }
+.tile .tn {
+  font-size: 0.8rem; font-weight: 650; text-align: center; line-height: 1.15; max-width: 100%;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word;
+}
+.tile.on { border-color: var(--accent); background: linear-gradient(160deg, hsl(var(--h) 90% 60% / 0.2), hsl(calc(var(--h) + 50) 95% 60% / 0.12)), var(--card); }
+.tile.on::after {
+  content: '✓'; position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--grad); color: #fff; font-size: 0.8rem; font-weight: 800; display: grid; place-items: center;
+}
+.row-btn { gap: 12px; }
+.row-btn .ri { font-size: 1.5rem; width: 34px; text-align: center; flex: none; }
+.row-btn .rn { flex: 1; min-width: 0; }
+.row-btn .tick { opacity: 0; color: var(--accent); font-weight: 800; }
+.row-btn.on { border-color: var(--accent); background: hsl(var(--h) 90% 60% / 0.1); }
+.row-btn.on .tick { opacity: 1; }
+.item .ico { font-size: 1.4rem; flex: none; }
+.sheet-in:focus { outline: none; }
+.sheet-actions { position: sticky; bottom: 0; background: var(--card); padding-top: 12px; margin-top: 12px; }
+.sheet-tools { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 8px; }
+.sheet-tools input[type='search'] { flex: 1; margin: 0; }
+.results { max-height: 52dvh; }
+.results .empty { padding: 28px 12px; }
+.small { font-size: 0.85rem; }
+.icon-pick { width: 52px; height: 52px; border-radius: 16px; font-size: 1.7rem; flex: none; border: 1px solid var(--line); background: var(--card2); }
+.icon-pick.sm { width: 44px; height: 44px; font-size: 1.4rem; border-radius: 14px; }
+.name-row { display: flex; gap: 10px; align-items: flex-start; }
+.name-row .input { margin: 0; height: 52px; }
+.emoji-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(46px, 1fr)); gap: 6px; max-height: 38dvh; overflow: auto; }
+.emo { font-size: 1.5rem; height: 46px; border-radius: 12px; border: 2px solid transparent; background: var(--card2); }
+.emo.on { border-color: var(--accent); }
+.scan-cta { margin-bottom: 12px; }
+.scan-row { background: var(--card2); border-radius: 16px; padding: 10px; display: grid; gap: 8px; margin-bottom: 8px; }
+.scan-row.done { display: flex; align-items: center; gap: 10px; opacity: 0.7; }
+.srow1, .srow2 { display: flex; align-items: center; gap: 8px; }
+.srow1 .input { margin: 0; flex: 1; min-width: 0; }
+.srow2 select { flex: 1; min-width: 0; }
+.srow2.between { justify-content: space-between; }
+.scan-row > select { margin: 0; }
+.input.slim.price { width: 100px; flex: none; }
+.grow { flex: 1; min-width: 0; }
+.chk.tight { flex: none; min-height: 0; }
+.raw { white-space: pre-wrap; font: 0.75rem/1.35 ui-monospace, monospace; background: var(--card2); padding: 10px; border-radius: 12px; max-height: 38dvh; overflow: auto; }
+.btn.wide { width: 100%; flex: none; }
+.empty + a.btn { margin-top: 4px; }

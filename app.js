@@ -1,4 +1,6 @@
 import * as db from './db.js';
+import { CATALOG, CAT_ICON, EMOJI_PICKER, guess } from './catalog.js';
+import * as scan from './scan.js';
 
 /* ───────────── utilità ───────────── */
 const $ = (s, r = document) => r.querySelector(s);
@@ -30,6 +32,8 @@ const ICONS = {
   back: '<path d="m15 18-6-6 6-6"/>',
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16v4Z"/>',
+  grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  camera: '<path d="M4 8h3l1.6-2h6.8L17 8h3v11H4Z"/><circle cx="12" cy="13.5" r="3.4"/>',
   cart: '<circle cx="9" cy="20" r="1.4"/><circle cx="18" cy="20" r="1.4"/><path d="M3 4h2.5l2.4 11h10.2L20 8H7"/>',
 };
 function icon(name) {
@@ -103,22 +107,56 @@ function applyPrefs() {
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyPrefs);
 
 /* ───────────── stato ───────────── */
-const state = { categories: [], articles: [], lists: [], purchases: [] };
+const state = { categories: [], articles: [], lists: [], purchases: [], aliases: [] };
 async function load() {
-  const [categories, articles, lists, purchases] = await Promise.all(db.STORES.map(db.all));
-  Object.assign(state, { categories: categories.sort(byOrder), articles, lists, purchases });
+  const [categories, articles, lists, purchases, aliases] = await Promise.all(db.STORES.map(db.all));
+  Object.assign(state, { categories: categories.sort(byOrder), articles, lists, purchases, aliases });
 }
 const artById = (id) => state.articles.find((a) => a.id === id);
 const catName = (id) => state.categories.find((c) => c.id === id)?.name ?? 'Senza categoria';
+const catIconOf = (c) => c?.icon || CAT_ICON[norm(c?.name ?? '')] || '🏷️';
+const iconOf = (a) => {
+  if (a.icon) return a.icon;
+  const g = guess(a.name);
+  if (g) return g.icon;
+  const c = state.categories.find((x) => x.id === a.categoryId);
+  return c ? catIconOf(c) : '🛒';
+};
+const fmtIn = (n) => n.toFixed(2).replace('.', ',');
 
-const DEFAULT_CATEGORIES = [
-  'Frutta e verdura', 'Pane e panetteria', 'Latticini e uova', 'Carne e pesce',
-  'Dispensa', 'Surgelati', 'Bevande', 'Casa e igiene', 'Altro',
-];
-async function seed() {
-  if (state.categories.length || state.articles.length || state.lists.length || state.purchases.length) return;
-  for (const [i, name] of DEFAULT_CATEGORIES.entries()) await db.put('categories', { name, order: i + 1 });
+/**
+ * Catalogo di base: crea categorie e articoli generici mancanti (non tocca quelli esistenti).
+ * Con force=false lo fa una sola volta (al primo avvio o dopo l'aggiornamento che lo introduce).
+ */
+async function seedCatalog({ force = false } = {}) {
+  if (!force && prefs.get('catalogV', '') === '1') return 0;
+  let added = 0;
+  const catByName = new Map(state.categories.map((c) => [norm(c.name), c]));
+  let order = Math.max(0, ...state.categories.map((c) => c.order ?? 0));
+  const known = new Set(state.articles.map((a) => norm(a.name)));
+  for (const [cName, cIcon, items] of CATALOG) {
+    let cat = catByName.get(norm(cName));
+    if (!cat) {
+      cat = { name: cName, order: ++order, icon: cIcon };
+      cat.id = await db.put('categories', cat);
+      catByName.set(norm(cName), cat);
+    }
+    for (const [name, ico] of items) {
+      if (known.has(norm(name))) continue;
+      await db.put('articles', { name, icon: ico, categoryId: cat.id });
+      known.add(norm(name));
+      added++;
+    }
+  }
+  // icone per gli articoli già presenti che non ne hanno
+  for (const a of state.articles) {
+    if (a.icon) continue;
+    const g = guess(a.name);
+    if (g) await db.put('articles', { ...a, icon: g.icon });
+  }
+  prefs.set('catalogV', '1');
   await load();
+  return added;
 }
 
 /* ───────────── componenti UI ───────────── */
@@ -134,7 +172,7 @@ function openSheet(title, body, actions = [], onClose) {
   const dlg = h('dialog', { class: 'sheet' });
   const close = () => { if (dlg.open) dlg.close(); };
   dlg.append(
-    h('div', { class: 'sheet-in' },
+    h('div', { class: 'sheet-in', tabindex: '-1', autofocus: true },
       h('div', { class: 'grab' }),
       h('h2', {}, title),
       h('div', { class: 'sheet-body' }, body),
@@ -201,6 +239,243 @@ const segmented = (options, current, onPick) =>
     options.map(([val, label]) =>
       h('button', { class: val === current ? 'on' : '', type: 'button', role: 'tab', onclick: () => onPick(val) }, label)));
 
+/* ───────────── catalogo: griglia/lista condivisa, icone ───────────── */
+const getView = () => (prefs.get('artView', 'tiles') === 'list' ? 'list' : 'tiles');
+
+function viewToggle(onChange) {
+  const mk = (mode, ic, label) =>
+    h('button', {
+      class: 'icon-btn' + (getView() === mode ? ' on' : ''), type: 'button', 'aria-label': label, 'aria-pressed': getView() === mode,
+      onclick: () => { prefs.set('artView', mode); onChange(); },
+    }, icon(ic));
+  return h('div', { class: 'vt' }, mk('list', 'list', 'Vista a elenco'), mk('tiles', 'grid', 'Vista a riquadri'));
+}
+
+/** Articoli raggruppati per categoria, come riquadri o come elenco (in base alla preferenza). */
+function articleGroups(arts, { onPick, isOn, trailing }) {
+  const mode = getView();
+  const groups = new Map();
+  for (const a of arts) {
+    const k = state.categories.some((c) => c.id === a.categoryId) ? a.categoryId : null;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(a);
+  }
+  const order = [...state.categories.map((c) => c.id), null].filter((k) => groups.has(k));
+  return order.map((k) => {
+    const items = groups.get(k).sort(byName);
+    const cat = state.categories.find((c) => c.id === k);
+    const cell = (a) => {
+      const on = isOn?.(a);
+      const click = (e) => onPick(a, e.currentTarget);
+      return mode === 'tiles'
+        ? h('button', { class: 'tile' + (on ? ' on' : ''), type: 'button', onclick: click },
+            h('span', { class: 'ti' }, iconOf(a)), h('span', { class: 'tn' }, a.name))
+        : h('button', { class: 'row-btn' + (on ? ' on' : ''), type: 'button', onclick: click },
+            h('span', { class: 'ri' }, iconOf(a)), h('span', { class: 'rn' }, a.name), trailing ? trailing(a) : null);
+    };
+    return h('div', { class: 'group' },
+      h('h3', {}, cat ? `${catIconOf(cat)} ${cat.name}` : '🛒 Senza categoria', h('small', {}, items.length)),
+      mode === 'tiles' ? h('div', { class: 'tiles' }, items.map(cell)) : items.map(cell));
+  });
+}
+
+function pickEmoji(current, onPick) {
+  const custom = h('input', { class: 'input', placeholder: 'Oppure scrivi o incolla un’emoji', maxlength: 8 });
+  const grid = h('div', { class: 'emoji-grid' },
+    EMOJI_PICKER.map((e) => h('button', { class: 'emo' + (e === current ? ' on' : ''), type: 'button', onclick: () => { onPick(e); s.close(); } }, e)));
+  const s = openSheet('Scegli un’icona', [grid, h('label', { class: 'lbl' }, 'Personalizzata'), custom], [
+    { label: 'Chiudi', cls: 'ghost', run: (c) => c() },
+    { label: 'Usa la mia', cls: 'primary', run: (c) => { const v = custom.value.trim(); if (v) onPick(v); c(); } },
+  ]);
+}
+
+/* ───────────── scansione scontrino ───────────── */
+function pickImage() {
+  return new Promise((resolve) => {
+    const input = h('input', { type: 'file', accept: 'image/*', class: 'hidden' });
+    let settled = false;
+    const done = (f) => { if (settled) return; settled = true; input.remove(); resolve(f); };
+    input.addEventListener('change', () => done(input.files[0] || null));
+    input.addEventListener('cancel', () => done(null));
+    document.body.append(input);
+    input.click();
+  });
+}
+
+/** Chiede la foto, la legge con l'OCR e restituisce { text, items, total } (o null se annullato). */
+async function runScan() {
+  const file = await pickImage();
+  if (!file) return null;
+  const bar = h('i');
+  const status = h('p', { class: 'muted' }, 'Preparo la foto…');
+  let finished = false;
+  let cancelled = false;
+  let task = null;
+  const stop = () => { cancelled = true; task?.cancel(); };
+  const sh = openSheet('Scansione scontrino', [
+    status, h('div', { class: 'bar' }, bar),
+    h('p', { class: 'muted small' }, 'La lettura avviene sul telefono: la foto non viene inviata a nessuno.'),
+  ], [{ label: 'Annulla', cls: 'ghost', run: (c) => { stop(); c(); } }], () => { if (!finished) stop(); });
+  task = scan.recognize(file, (t, p) => { status.textContent = t; bar.style.width = Math.round(p * 100) + '%'; });
+  try {
+    const text = await task.promise;
+    finished = true;
+    sh.close();
+    return { text, ...scan.parseReceipt(text) };
+  } catch (e) {
+    finished = true;
+    sh.close();
+    if (!cancelled) toast(e?.message && e.message !== 'annullato' ? e.message : 'Lettura non riuscita, riprova');
+    return null;
+  }
+}
+
+/** Ricorda che una riga di scontrino corrisponde a un articolo (le volte successive viene riconosciuta da sola). */
+async function learn(raw, articleId) {
+  const key = scan.aliasKey(raw);
+  if (!key) return;
+  const ex = state.aliases.find((a) => a.key === key);
+  if (ex) {
+    if (ex.articleId === articleId) return;
+    ex.articleId = articleId;
+    await db.put('aliases', ex);
+  } else {
+    const rec = { key, articleId };
+    rec.id = await db.put('aliases', rec);
+    state.aliases.push(rec);
+  }
+}
+
+function rawTextBlock(res) {
+  return h('details', { class: 'prices' }, h('summary', {}, 'Testo letto dalla foto'), h('pre', { class: 'raw' }, res.text.trim() || '(nessun testo)'));
+}
+
+function noLinesSheet(res) {
+  openSheet('Nessuna riga riconosciuta', [
+    h('p', { class: 'muted' }, 'Non ho trovato righe con un prezzo. Riprova con lo scontrino ben disteso, buona luce e senza ombre, inquadrandolo tutto in verticale.'),
+    rawTextBlock(res),
+  ], [{ label: 'Chiudi', cls: 'primary', run: (c) => c() }]);
+}
+
+/** Scontrino → nuovi articoli del catalogo. */
+function reviewCreate(res) {
+  if (!res.items.length) return noLinesSheet(res);
+  const rows = res.items.map((it) => {
+    const m = scan.matchArticle(it.raw, state.articles, state.aliases);
+    const art = m ? artById(m.articleId) : null;
+    const g = guess(it.raw);
+    const cat = g && state.categories.find((c) => norm(c.name) === norm(g.cat));
+    return { it, art, include: !art, name: g?.name ?? it.name, icon: g?.icon ?? null, catId: cat?.id ?? null };
+  });
+  const counter = h('p', { class: 'muted' });
+  const upd = () => {
+    const n = rows.filter((r) => r.include).length;
+    counter.textContent = n ? `${n} ${n === 1 ? 'articolo da creare' : 'articoli da creare'}` : 'Nessun nuovo articolo selezionato';
+  };
+  const body = [counter];
+  for (const r of rows) {
+    if (r.art) {
+      body.push(h('div', { class: 'scan-row done' },
+        h('span', { class: 'ri' }, iconOf(r.art)),
+        h('div', { class: 'grow' }, h('strong', {}, r.art.name), h('small', { class: 'muted block' }, `Già presente · ${r.it.raw} · ${money(r.it.price)}`))));
+      continue;
+    }
+    const nameIn = h('input', { class: 'input slim', value: r.name, maxlength: 80, 'aria-label': 'Nome articolo', oninput: (e) => { r.name = e.target.value; } });
+    const iconBtn = h('button', { class: 'icon-pick sm', type: 'button', onclick: () => pickEmoji(r.icon, (e) => { r.icon = e; iconBtn.textContent = e; }) }, r.icon || '🛒');
+    const sel = categorySelect(r.catId);
+    sel.classList.add('slim');
+    sel.addEventListener('change', () => { r.catId = Number(sel.value) || null; });
+    const chk = h('input', { type: 'checkbox', checked: r.include, onchange: (e) => { r.include = e.target.checked; upd(); } });
+    body.push(h('div', { class: 'scan-row' },
+      h('div', { class: 'srow1' }, h('label', { class: 'chk tight' }, chk, h('span', { class: 'box' })), iconBtn, nameIn),
+      h('div', { class: 'srow2' }, sel, h('small', { class: 'muted' }, `${r.it.raw} · ${money(r.it.price)}`))));
+  }
+  body.push(rawTextBlock(res));
+  upd();
+  openSheet('Articoli dallo scontrino', body, [
+    { label: 'Annulla', cls: 'ghost', run: (c) => c() },
+    {
+      label: 'Crea articoli', cls: 'primary',
+      run: async (close) => {
+        let created = 0;
+        const known = new Map(state.articles.map((a) => [norm(a.name), a]));
+        for (const r of rows) {
+          let art = r.art;
+          if (!art && r.include) {
+            const n = cap(r.name.trim());
+            if (!n) continue;
+            art = known.get(norm(n));
+            if (!art) {
+              art = { name: n, categoryId: r.catId };
+              if (r.icon) art.icon = r.icon;
+              art.id = await db.put('articles', art);
+              known.set(norm(n), art);
+              created++;
+            }
+          }
+          if (art) await learn(r.it.raw, art.id);
+        }
+        close();
+        await load();
+        toast(created ? `${created} ${created === 1 ? 'articolo creato' : 'articoli creati'} ✓` : 'Nessun articolo nuovo');
+        render();
+      },
+    },
+  ]);
+}
+
+/** Scontrino → importi per gli articoli della spesa. Restituisce { prices, total, extra } o null. */
+function reviewPrices(res, list) {
+  return new Promise((resolve) => {
+    if (!res.items.length) { noLinesSheet(res); return resolve(null); }
+    const inList = list.items.filter((i) => i.checked && artById(i.articleId)).map((i) => artById(i.articleId)).sort(byName);
+    const inListIds = new Set(inList.map((a) => a.id));
+    const others = state.articles.filter((a) => !inListIds.has(a.id)).sort(byName);
+    const rows = res.items.map((it) => {
+      const m = scan.matchArticle(it.raw, inList, state.aliases) || scan.matchArticle(it.raw, state.articles, state.aliases);
+      return { it, articleId: m?.articleId ?? null };
+    });
+    const opt = (a, sel) => h('option', { value: a.id, selected: a.id === sel }, `${iconOf(a)} ${a.name}`);
+    const body = [];
+    const totalIn = res.total != null
+      ? h('input', { class: 'input slim', type: 'text', inputmode: 'decimal', value: fmtIn(res.total), 'aria-label': 'Totale scontrino' })
+      : null;
+    if (totalIn) body.push(h('div', { class: 'card' }, h('div', { class: 'row' }, h('strong', {}, 'Totale scontrino (€)'), totalIn)));
+    body.push(h('p', { class: 'muted' }, 'Controlla a quale articolo corrisponde ogni riga e correggi gli importi se serve.'));
+    for (const r of rows) {
+      const priceIn = h('input', { class: 'input slim price', type: 'text', inputmode: 'decimal', value: fmtIn(r.it.price), 'aria-label': 'Importo' });
+      const sel = h('select', { class: 'input slim', onchange: (e) => { r.articleId = Number(e.target.value) || null; } },
+        h('option', { value: '' }, '— ignora questa riga —'),
+        inList.length ? h('optgroup', { label: 'Nella lista' }, inList.map((a) => opt(a, r.articleId))) : null,
+        h('optgroup', { label: 'Altri articoli' }, others.map((a) => opt(a, r.articleId))));
+      r.priceIn = priceIn;
+      body.push(h('div', { class: 'scan-row' }, h('div', { class: 'srow2 between' }, h('small', { class: 'muted grow' }, r.it.raw), priceIn), sel));
+    }
+    body.push(rawTextBlock(res));
+    let finished = false;
+    openSheet('Importi dallo scontrino', body, [
+      { label: 'Annulla', cls: 'ghost', run: (c) => c() },
+      {
+        label: 'Applica', cls: 'primary',
+        run: async (close) => {
+          const prices = new Map();
+          const extra = new Set();
+          for (const r of rows) {
+            if (!r.articleId) continue;
+            const p = num(r.priceIn.value);
+            if (p != null) prices.set(r.articleId, Math.round(((prices.get(r.articleId) || 0) + p) * 100) / 100);
+            if (!inListIds.has(r.articleId)) extra.add(r.articleId);
+            await learn(r.it.raw, r.articleId);
+          }
+          finished = true;
+          close();
+          resolve({ prices, total: totalIn ? num(totalIn.value) : null, extra });
+        },
+      },
+    ], () => { if (!finished) resolve(null); });
+  });
+}
+
 /* ───────────── VISTA: liste ───────────── */
 function viewListe() {
   const open = state.lists.filter((l) => l.status === 'open').sort((a, b) => b.createdAt - a.createdAt);
@@ -225,11 +500,13 @@ function viewListe() {
   return wrap;
 }
 
+let autoAdd = null; // dopo la creazione di una lista si apre subito la scelta degli articoli
 async function newList() {
   const name = await askText('Nuova lista', 'Nome della lista', 'Spesa del ' + fmtShort(todayISO()), 'Crea');
   if (name == null) return;
   const id = await db.put('lists', { name: name.trim() || 'Spesa', createdAt: Date.now(), status: 'open', items: [] });
   await load();
+  autoAdd = id;
   location.hash = '#/liste/' + id;
 }
 
@@ -284,6 +561,7 @@ function viewLista(id) {
                 onchange: (e) => { it.checked = e.target.checked; row.classList.toggle('done', it.checked); persist(); updateProgress(); },
               }),
               h('span', { class: 'box' }),
+              h('span', { class: 'ico' }, iconOf(a)),
               h('span', { class: 'nm' }, a.name)),
             h('div', { class: 'stepper' },
               h('button', { type: 'button', 'aria-label': 'Meno', onclick: () => setQty(-1) }, '−'),
@@ -320,62 +598,57 @@ function viewLista(id) {
       ],
     }),
     h('div', { class: 'card progress' }, h('div', { class: 'row' }, h('span', { class: 'muted' }, 'Progresso'), progressText), h('div', { class: 'bar' }, barFill)),
-    items.length ? body : empty('Lista vuota', 'Aggiungi gli articoli che ti servono.'),
+    items.length ? body : empty('Lista vuota', 'Tocca “Articoli” per scegliere dal catalogo gli articoli che ti servono.'),
     h('div', { class: 'dock' },
       h('button', { class: 'btn ghost', type: 'button', onclick: () => addItemsSheet(list) }, icon('plus'), ' Articoli'),
       concludeBtn)
   );
   updateProgress();
+  if (autoAdd === id) { autoAdd = null; setTimeout(() => addItemsSheet(list), 60); }
   return wrap;
 }
 
 function addItemsSheet(list) {
-  const search = h('input', { class: 'input', type: 'search', placeholder: 'Cerca o crea un articolo…', autocomplete: 'off' });
-  const catSel = categorySelect(Number(prefs.get('newCat', '')) || null);
+  const search = h('input', { class: 'input', type: 'search', placeholder: 'Cerca nel catalogo…', autocomplete: 'off' });
+  const count = h('small', { class: 'muted' });
+  const toolbar = h('div', { class: 'sheet-tools' }, search);
+  const vtHost = h('div', {});
   const results = h('div', { class: 'results' });
-  const catRow = h('div', { class: 'newcat' }, h('label', { class: 'lbl' }, 'Categoria per i nuovi articoli'), catSel);
-  catSel.addEventListener('change', () => prefs.set('newCat', catSel.value));
+  const updCount = () => { const n = list.items.length; count.textContent = `${n} ${n === 1 ? 'articolo' : 'articoli'} nella lista`; };
+  const inList = (a) => list.items.some((i) => i.articleId === a.id);
 
-  const addToList = async (a) => {
-    list.items.push({ articleId: a.id, qty: 1, checked: false });
+  const toggle = async (a, el) => {
+    if (inList(a)) list.items = list.items.filter((i) => i.articleId !== a.id);
+    else list.items.push({ articleId: a.id, qty: 1, checked: false });
+    el?.classList.toggle('on', inList(a));
+    updCount();
     await db.put('lists', list);
-    draw();
   };
   const draw = () => {
-    const q = search.value.trim();
-    const inList = new Set(list.items.map((i) => i.articleId));
-    const matches = state.articles.filter((a) => !q || norm(a.name).includes(norm(q))).sort(byName).slice(0, 80);
-    const exact = q && state.articles.some((a) => norm(a.name) === norm(q));
-    const nodes = [];
-    if (q && !exact) {
-      nodes.push(h('button', {
-        class: 'pick create', type: 'button',
-        onclick: async () => {
-          const name = cap(q);
-          const art = { name, categoryId: Number(catSel.value) || null };
-          art.id = await db.put('articles', art);
-          state.articles.push(art); // niente load(): manteniamo lo stesso oggetto lista in memoria
-          search.value = '';
-          await addToList(art);
-        },
-      }, h('span', {}, `Crea “${cap(q)}”`), h('span', { class: 'plus' }, '+')));
+    const q = norm(search.value);
+    const arts = state.articles.filter((a) => !q || norm(a.name).includes(q));
+    if (!arts.length) {
+      results.replaceChildren(empty(
+        state.articles.length ? 'Nessun articolo trovato' : 'Il catalogo è vuoto',
+        'Per aggiungere nuovi articoli vai nella sezione Articoli: qui puoi inserire solo articoli già creati.'),
+      h('a', { class: 'btn ghost wide', href: '#/articoli', onclick: () => dlg.close() }, 'Vai ad Articoli'));
+      return;
     }
-    for (const a of matches) {
-      const added = inList.has(a.id);
-      nodes.push(h('button', {
-        class: 'pick' + (added ? ' added' : ''), type: 'button', disabled: added,
-        onclick: () => addToList(a),
-      }, h('span', {}, a.name, h('small', { class: 'muted' }, ' · ', catName(a.categoryId))), h('span', { class: 'plus' }, added ? '✓' : '+')));
-    }
-    if (!nodes.length) nodes.push(h('p', { class: 'muted center' }, 'Nessun articolo. Scrivi un nome per crearlo.'));
-    results.replaceChildren(...nodes);
+    results.replaceChildren(...articleGroups(arts, {
+      onPick: toggle, isOn: inList,
+      trailing: () => h('span', { class: 'tick', 'aria-hidden': 'true' }, '✓'),
+    }));
   };
+  const drawToggle = () => vtHost.replaceChildren(viewToggle(() => { drawToggle(); draw(); }));
+  toolbar.append(vtHost);
   search.addEventListener('input', draw);
+  drawToggle();
   draw();
-  openSheet('Aggiungi articoli', [search, catRow, results], [{ label: 'Fatto', cls: 'primary', run: (c) => c() }], () => render());
+  updCount();
+  const { el: dlg } = openSheet('Aggiungi alla lista', [toolbar, count, results], [{ label: 'Fatto', cls: 'primary', run: (c) => c() }], () => render());
 }
 
-function concludeSheet(list) {
+function concludeSheet(list, prefill = null) {
   const valid = list.items.filter((i) => artById(i.articleId));
   const checked = valid.filter((i) => i.checked);
   const unchecked = valid.filter((i) => !i.checked);
@@ -383,19 +656,44 @@ function concludeSheet(list) {
 
   const dateIn = h('input', { class: 'input', type: 'date', value: todayISO(), max: todayISO() });
   const totalIn = h('input', { class: 'input', type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: 'Totale (facoltativo)' });
-  const priceIns = checked.map(() => h('input', { class: 'input price', type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: '€' }));
-  const carry = unchecked.length
-    ? h('input', { type: 'checkbox', checked: true })
-    : null;
+  const priceIns = checked.map((it) => h('input', { class: 'input price', type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: '€' }));
+  if (prefill) {
+    if (prefill.total != null) totalIn.value = fmtIn(prefill.total);
+    checked.forEach((it, i) => { const p = prefill.prices.get(it.articleId); if (p != null) priceIns[i].value = fmtIn(p); });
+  }
+  const carry = unchecked.length ? h('input', { type: 'checkbox', checked: true }) : null;
+  let saved = false;
+  let sh = null;
+
+  const scanBtn = h('button', {
+    class: 'btn ghost wide', type: 'button',
+    onclick: async () => {
+      const res = await runScan();
+      if (!res) return;
+      const out = await reviewPrices(res, list);
+      if (!out) return;
+      // articoli presenti sullo scontrino ma non spuntati: li consideriamo acquistati
+      for (const id of out.extra) {
+        const ex = list.items.find((i) => i.articleId === id);
+        if (ex) ex.checked = true;
+        else list.items.push({ articleId: id, qty: 1, checked: true });
+      }
+      if (out.extra.size) await db.put('lists', list);
+      saved = true; // evita il render in chiusura: riapriamo subito il foglio aggiornato
+      sh.close();
+      concludeSheet(list, out);
+    },
+  }, icon('camera'), ' Scansiona scontrino');
 
   const body = [
+    scanBtn,
     h('label', { class: 'lbl' }, 'Data della spesa'), dateIn,
     h('label', { class: 'lbl' }, 'Totale speso (€)'), totalIn,
-    h('details', { class: 'prices' },
+    h('details', { class: 'prices', open: !!prefill?.prices?.size },
       h('summary', {}, 'Importi per articolo (facoltativo)'),
       checked.map((it, i) => {
         const a = artById(it.articleId);
-        return h('div', { class: 'price-row' }, h('span', {}, a.name, it.qty > 1 ? ` ×${it.qty}` : ''), priceIns[i]);
+        return h('div', { class: 'price-row' }, h('span', {}, `${iconOf(a)} ${a.name}`, it.qty > 1 ? ` ×${it.qty}` : ''), priceIns[i]);
       })),
     carry
       ? h('label', { class: 'chk line' }, carry, h('span', { class: 'box' }),
@@ -403,7 +701,7 @@ function concludeSheet(list) {
       : null,
   ];
 
-  openSheet(`Registra spesa (${checked.length} articoli)`, body, [
+  sh = openSheet(`Registra spesa (${checked.length} articoli)`, body, [
     { label: 'Annulla', cls: 'ghost', run: (c) => c() },
     {
       label: 'Salva spesa', cls: 'primary',
@@ -429,6 +727,7 @@ function concludeSheet(list) {
             items: unchecked.map((it) => ({ articleId: it.articleId, qty: it.qty, checked: false })),
           });
         }
+        saved = true;
         close();
         await load();
         storicoTab = 'spese';
@@ -436,62 +735,77 @@ function concludeSheet(list) {
         location.hash = '#/storico';
       },
     },
-  ]);
+  ], () => { if (!saved) render(); });
 }
 
 /* ───────────── VISTA: articoli e categorie ───────────── */
 let artQuery = '';
 function viewArticoli() {
-  const wrap = h('section', {}, pageHead('Articoli'));
+  const wrap = h('section', {}, pageHead('Articoli', { actions: [viewToggle(render)] }));
   const chips = h('div', { class: 'chips' },
     state.categories.map((c) =>
       h('button', { class: 'chip', type: 'button', onclick: () => categorySheet(c) },
-        c.name, h('small', {}, state.articles.filter((a) => a.categoryId === c.id).length))),
+        catIconOf(c) + ' ' + c.name, h('small', {}, state.articles.filter((a) => a.categoryId === c.id).length))),
     h('button', { class: 'chip add', type: 'button', onclick: () => categorySheet(null) }, '+ Categoria'));
   const search = h('input', { class: 'input', type: 'search', placeholder: 'Cerca tra gli articoli…', value: artQuery, autocomplete: 'off' });
-  const box = h('div', { class: 'stack tight' });
+  const box = h('div', {});
 
   const draw = () => {
     const q = norm(artQuery);
     const arts = state.articles.filter((a) => !q || norm(a.name).includes(q));
-    const groups = new Map();
-    for (const a of arts) {
-      const k = state.categories.some((c) => c.id === a.categoryId) ? a.categoryId : null;
-      if (!groups.has(k)) groups.set(k, []);
-      groups.get(k).push(a);
-    }
-    const order = [...state.categories.map((c) => c.id), null].filter((k) => groups.has(k));
-    if (!order.length) {
-      box.replaceChildren(empty(state.articles.length ? 'Nessun risultato' : 'Nessun articolo', state.articles.length ? 'Prova con un altro nome.' : 'Tocca + per aggiungere il primo articolo.'));
+    if (!arts.length) {
+      box.replaceChildren(empty(state.articles.length ? 'Nessun risultato' : 'Nessun articolo', state.articles.length ? 'Prova con un altro nome.' : 'Tocca + per creare il primo articolo.'));
       return;
     }
-    box.replaceChildren(...order.map((k) =>
-      h('div', { class: 'group' },
-        h('h3', {}, k == null ? 'Senza categoria' : catName(k)),
-        groups.get(k).sort(byName).map((a) =>
-          h('button', { class: 'row-btn', type: 'button', onclick: () => articleSheet(a) }, h('span', {}, a.name), icon('edit'))))));
+    box.replaceChildren(...articleGroups(arts, {
+      onPick: (a) => articleSheet(a),
+      trailing: () => icon('edit'),
+    }));
   };
   search.addEventListener('input', () => { artQuery = search.value; draw(); });
   draw();
-  wrap.append(chips, search, box, fab(() => articleSheet(null), 'Nuovo articolo'));
+  wrap.append(
+    h('button', { class: 'btn ghost wide scan-cta', type: 'button', onclick: scanForArticles }, icon('camera'), ' Crea articoli da uno scontrino'),
+    chips, search, box, fab(() => articleSheet(null), 'Nuovo articolo'));
   return wrap;
 }
 
+async function scanForArticles() {
+  const res = await runScan();
+  if (res) reviewCreate(res);
+}
+
 function articleSheet(a) {
+  let ico = a?.icon ?? null;
+  let iconTouched = !!a?.icon;
+  let catTouched = !!a;
   const name = h('input', { class: 'input', value: a?.name ?? '', placeholder: 'Nome articolo', maxlength: 80 });
+  const iconBtn = h('button', {
+    class: 'icon-pick', type: 'button', 'aria-label': 'Scegli icona',
+    onclick: () => pickEmoji(ico, (e) => { ico = e; iconTouched = true; iconBtn.textContent = e; }),
+  }, ico || (a ? iconOf(a) : '🛒'));
   const sel = categorySelect(a ? a.categoryId : Number(prefs.get('newCat', '')) || null);
+  sel.addEventListener('change', () => { catTouched = true; });
+  name.addEventListener('input', () => {
+    const g = guess(name.value);
+    if (!g) return;
+    if (!iconTouched) { ico = g.icon; iconBtn.textContent = g.icon; }
+    if (!catTouched) { const c = state.categories.find((x) => norm(x.name) === norm(g.cat)); if (c) sel.value = c.id; }
+  });
+
   const actions = [];
   if (a) {
     actions.push({
       label: 'Elimina', cls: 'danger',
       run: async (close) => {
         close();
-        if (!(await confirmBox('Eliminare l’articolo?', `"${a.name}" sarà rimosso dall’elenco e dalle liste aperte. Lo storico degli acquisti resta.`, 'Elimina', true))) return;
+        if (!(await confirmBox('Eliminare l’articolo?', `"${a.name}" sarà rimosso dal catalogo e dalle liste aperte. Lo storico degli acquisti resta.`, 'Elimina', true))) return;
         await db.del('articles', a.id);
         for (const l of state.lists.filter((l) => l.status === 'open' && l.items.some((i) => i.articleId === a.id))) {
           l.items = l.items.filter((i) => i.articleId !== a.id);
           await db.put('lists', l);
         }
+        for (const al of state.aliases.filter((x) => x.articleId === a.id)) await db.del('aliases', al.id);
         await load(); render();
       },
     });
@@ -504,19 +818,28 @@ function articleSheet(a) {
       if (!n) { toast('Inserisci un nome'); return; }
       const dup = state.articles.find((x) => norm(x.name) === norm(n) && x.id !== a?.id);
       if (dup) { toast('Esiste già un articolo con questo nome'); return; }
-      await db.put('articles', { ...(a || {}), name: n, categoryId: Number(sel.value) || null });
+      const rec = { ...(a || {}), name: n, categoryId: Number(sel.value) || null };
+      if (ico) rec.icon = ico; else delete rec.icon;
+      await db.put('articles', rec);
       if (!a) prefs.set('newCat', sel.value);
       close(); await load(); render();
+      if (!a) toast(`${n} aggiunto al catalogo ✓`);
     },
   });
   openSheet(a ? 'Modifica articolo' : 'Nuovo articolo', [
-    h('label', { class: 'lbl' }, 'Nome'), name, h('label', { class: 'lbl' }, 'Categoria'), sel,
+    h('label', { class: 'lbl' }, 'Icona e nome'), h('div', { class: 'name-row' }, iconBtn, name),
+    h('label', { class: 'lbl' }, 'Categoria'), sel,
   ], actions);
   if (!a) setTimeout(() => name.focus(), 60);
 }
 
 function categorySheet(c) {
+  let ico = c?.icon ?? null;
   const name = h('input', { class: 'input', value: c?.name ?? '', placeholder: 'Nome categoria', maxlength: 40 });
+  const iconBtn = h('button', {
+    class: 'icon-pick', type: 'button', 'aria-label': 'Scegli icona',
+    onclick: () => pickEmoji(ico, (e) => { ico = e; iconBtn.textContent = e; }),
+  }, ico || (c ? catIconOf(c) : '🏷️'));
   const move = async (dir, close) => {
     const arr = [...state.categories];
     const i = arr.findIndex((x) => x.id === c.id);
@@ -549,11 +872,13 @@ function categorySheet(c) {
       if (!n) { toast('Inserisci un nome'); return; }
       if (state.categories.some((x) => norm(x.name) === norm(n) && x.id !== c?.id)) { toast('Categoria già esistente'); return; }
       const order = c ? c.order : Math.max(0, ...state.categories.map((x) => x.order ?? 0)) + 1;
-      await db.put('categories', { ...(c || {}), name: n, order });
+      const rec = { ...(c || {}), name: n, order };
+      if (ico) rec.icon = ico;
+      await db.put('categories', rec);
       close(); await load(); render();
     },
   });
-  const body = [h('label', { class: 'lbl' }, 'Nome'), name];
+  const body = [h('label', { class: 'lbl' }, 'Icona e nome'), h('div', { class: 'name-row' }, iconBtn, name)];
   if (c) {
     body.push(
       h('label', { class: 'lbl' }, 'Posizione (ordine dei reparti nelle liste)'),
@@ -727,10 +1052,14 @@ function viewImpostazioni() {
         ? h('button', { class: 'btn primary', type: 'button', onclick: async () => { installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; render(); } }, 'Installa sulla schermata Home')
         : h('p', { class: 'muted' }, matchMedia('(display-mode: standalone)').matches ? 'App installata.' : 'Per installarla: menu di Chrome (⋮) → “Installa app” o “Aggiungi a schermata Home”.'),
       h('button', {
+        class: 'btn ghost', type: 'button',
+        onclick: async () => { const n = await seedCatalog({ force: true }); toast(n ? `${n} articoli di base aggiunti` : 'Hai già tutti gli articoli di base'); render(); },
+      }, 'Aggiungi gli articoli di base mancanti'),
+      h('button', {
         class: 'btn danger', type: 'button',
         onclick: async () => {
           if (!(await confirmBox('Cancellare tutti i dati?', 'Liste, articoli, categorie e storico verranno eliminati definitivamente. Esporta prima un backup se ti servono.', 'Cancella tutto', true))) return;
-          await db.wipe(); await load(); await seed(); location.hash = '#/liste'; toast('Dati cancellati');
+          await db.wipe(); await load(); await seedCatalog({ force: true }); location.hash = '#/liste'; toast('Dati cancellati');
         },
       }, 'Cancella tutti i dati'))
   );
@@ -803,7 +1132,7 @@ async function init() {
   addEventListener('hashchange', render);
   try {
     await load();
-    await seed();
+    await seedCatalog();
   } catch (err) {
     $('#main').replaceChildren(empty('Database non disponibile', 'Il browser non permette l’archiviazione locale (navigazione in incognito?).'));
     return;
