@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="it" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Lista della Spesa</title>
+<meta name="theme-color" content="#f6f5fb">
+<meta name="color-scheme" content="light dark">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="styles.css">
+<script>
+// Applica tema e colore prima del rendering per evitare lampi
+try {
+  var t = localStorage.getItem('spesa.theme') || 'auto';
+  var dark = t === 'dark' || (t === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  var hue = localStorage.getItem('spesa.hue');
+  if (hue) document.documentElement.style.setProperty('--h', hue);
+} catch (e) {}
+</script>
+</head>
+<body>
+<main id="main"></main>
+<nav id="nav" aria-label="Navigazione principale"></nav>
+<div id="toast" popover="manual" role="status" aria-live="polite"></div>
+<noscript>Questa app richiede JavaScript.</noscript>
+<script type="module" src="app.js"></script>
+</body>
+</html>
